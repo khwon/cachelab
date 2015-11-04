@@ -3,6 +3,9 @@
 #include <getopt.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <inttypes.h>
 
 void print_help(char *progname){
   printf("Usage: %s [-hv] -s <num> -E <num> -b <num> -t <file>\n", progname);
@@ -19,15 +22,31 @@ void print_help(char *progname){
   printf("  linux>  %s -v -s 8 -E 2 -b 4 -t traces/yi.trace\n", progname);
 }
 
+typedef struct {
+  long set_idx_bits;
+  long assoc;
+  long block_bits;
+  long long n_set;
+  uintptr_t *arr;
+  int miss_cnt;
+  int hit_cnt;
+  int eviction_cnt;
+} cache_t;
+
 int main(int argc, char **argv)
 {
   int opt;
   int verbose = 0;
-  long n_set_idx_bits;
-  long assoc;
-  long block_bits;
   char *endptr;
   FILE *fp = NULL;
+  char buf[1024];
+
+  cache_t cache;
+
+  cache.arr = NULL;
+  cache.miss_cnt = 0;
+  cache.hit_cnt = 0;
+  cache.eviction_cnt = 0;
 
   while((opt = getopt(argc, argv, "hvs:E:b:t:")) != -1){
     switch(opt) {
@@ -38,13 +57,13 @@ int main(int argc, char **argv)
         verbose = 1;
         break;
       case 's':
-        n_set_idx_bits = strtol(optarg, &endptr, 10);
+        cache.set_idx_bits = strtol(optarg, &endptr, 10);
         break;
       case 'E':
-        assoc = strtol(optarg, &endptr, 10);
+        cache.assoc = strtol(optarg, &endptr, 10);
         break;
       case 'b':
-        block_bits = strtol(optarg, &endptr, 10);
+        cache.block_bits = strtol(optarg, &endptr, 10);
         break;
       case 't':
         if(!fp){
@@ -56,6 +75,58 @@ int main(int argc, char **argv)
         return -1;
     }
   }
+
+  cache.arr = calloc((1 << cache.set_idx_bits) * cache.assoc, sizeof(uintptr_t));
+
+  if(!cache.arr){
+    return -1;
+  }
+
+  while(fgets(buf,1024,fp)){
+    char *ret_ptr;
+    char type[3];
+    uintptr_t addr;
+    int size;
+
+    ret_ptr = strtok(buf," ,");
+    if(!ret_ptr){
+      printf("unknown format\n");
+      return -1;
+    }
+    strncpy(type,ret_ptr,2);
+    type[2] = '\0';
+
+    if(type[0] == 'I'){
+      // ignore instruction load
+      continue;
+    }
+
+    ret_ptr = strtok(NULL," ,");
+    if(!ret_ptr){
+      printf("unknown format\n");
+      return -1;
+    }
+    addr = strtol(ret_ptr, &endptr, 16);
+
+    ret_ptr = strtok(NULL," ,");
+    if(!ret_ptr){
+      printf("unknown format\n");
+      return -1;
+    }
+    size = strtol(ret_ptr, &endptr, 16);
+
+    if(verbose){
+      printf("%c %" PRIxPTR ",%d", type[0], addr, size);
+    }
+
+    if(verbose){
+      printf("\n");
+    }
+
+  }
   printSummary(0, 0, 0);
+  if(cache.arr){
+    free(cache.arr);
+  }
   return 0;
 }
