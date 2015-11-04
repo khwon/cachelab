@@ -21,17 +21,96 @@ void print_help(char *progname){
   printf("  linux>  %s -s 4 -E 1 -b 4 -t traces/yi.trace\n", progname);
   printf("  linux>  %s -v -s 8 -E 2 -b 4 -t traces/yi.trace\n", progname);
 }
+typedef struct {
+  uintptr_t tag;
+  char used;
+  unsigned int last_used;
+} cache_entry_t;
 
 typedef struct {
   long set_idx_bits;
+  uintptr_t set_mask;
   long assoc;
   long block_bits;
   long long n_set;
-  uintptr_t *arr;
   int miss_cnt;
   int hit_cnt;
   int eviction_cnt;
+
+  int tick;
+
+  cache_entry_t *arr;
 } cache_t;
+
+int try_cache(cache_t *cache, char op, uintptr_t addr, int verbose){
+  uintptr_t tmp;
+  uintptr_t tag;
+  uintptr_t set_idx;
+  int i;
+  int hit = 0;
+
+  cache_entry_t *entry;
+
+  tmp = addr >> (cache->block_bits);
+  set_idx = tmp & cache->set_mask;
+  tag = tmp >> cache->set_idx_bits;
+  //printf("\nset_idx %"PRIxPTR" tag %"PRIxPTR"\n",set_idx,tag);
+
+  entry = cache->arr + (set_idx * cache->assoc);
+
+
+  for(i=0; i < cache->assoc; i++){
+    if(entry[i].tag == tag && entry[i].used){
+      if(verbose){
+        printf(" hit");
+      }
+      entry[i].last_used = cache->tick;
+      cache->hit_cnt++;
+      hit = 1;
+      break;
+    }
+  }
+
+  if(!hit){
+    int need_eviction = 1;
+    cache->miss_cnt++;
+    if(verbose){
+      printf(" miss");
+    }
+    for(i=0; i < cache->assoc; i++){
+      if(!entry[i].used){
+        entry[i].tag = tag;
+        entry[i].used = 1;
+        entry[i].last_used = cache->tick;
+        need_eviction = 0;
+        break;
+      }
+    }
+    if(need_eviction){
+      int last_used = entry[0].last_used;
+      int target = 0;
+      cache->eviction_cnt++;
+      printf(" eviction");
+      for(i=1; i < cache->assoc; i++){
+        if(entry[i].last_used < last_used){
+          target = i;
+          last_used = entry[i].last_used;
+        }
+      }
+      entry[target].tag = tag;
+      entry[target].last_used = cache->tick;
+    }
+  }
+
+  if(op == 'M'){
+    if(verbose){
+      printf(" hit");
+    }
+    cache->hit_cnt++;
+  }
+  return 0;
+
+}
 
 int main(int argc, char **argv)
 {
@@ -47,6 +126,7 @@ int main(int argc, char **argv)
   cache.miss_cnt = 0;
   cache.hit_cnt = 0;
   cache.eviction_cnt = 0;
+  cache.tick = 0;
 
   while((opt = getopt(argc, argv, "hvs:E:b:t:")) != -1){
     switch(opt) {
@@ -58,6 +138,8 @@ int main(int argc, char **argv)
         break;
       case 's':
         cache.set_idx_bits = strtol(optarg, &endptr, 10);
+        cache.set_mask = ~0;
+        cache.set_mask >>= (sizeof(uintptr_t)*8 - cache.set_idx_bits);
         break;
       case 'E':
         cache.assoc = strtol(optarg, &endptr, 10);
@@ -76,7 +158,11 @@ int main(int argc, char **argv)
     }
   }
 
-  cache.arr = calloc((1 << cache.set_idx_bits) * cache.assoc, sizeof(uintptr_t));
+  if(!fp){
+    return -1;
+  }
+
+  cache.arr = calloc((1 << cache.set_idx_bits) * cache.assoc, sizeof(cache_entry_t));
 
   if(!cache.arr){
     return -1;
@@ -119,12 +205,15 @@ int main(int argc, char **argv)
       printf("%c %" PRIxPTR ",%d", type[0], addr, size);
     }
 
+    try_cache(&cache, type[0], addr, verbose);
+
     if(verbose){
       printf("\n");
     }
+    cache.tick++;
 
   }
-  printSummary(0, 0, 0);
+  printSummary(cache.hit_cnt, cache.miss_cnt, cache.eviction_cnt);
   if(cache.arr){
     free(cache.arr);
   }
